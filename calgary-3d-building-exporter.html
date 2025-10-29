@@ -136,9 +136,9 @@
             container: 'map',
             style: 'mapbox://styles/grisfaas/cmhcfruw1002x01r640vt7qlf',
             center: [-114.0719, 51.0447], // Calgary center
-            zoom: 14,
-            pitch: 45,
-            bearing: -17.6
+            zoom: 17,
+            pitch: 0,
+            bearing: 0
         });
 
         // Add geocoder (address search)
@@ -391,7 +391,8 @@
             const latToMeters = 111320; // meters per degree latitude
             
             objContent += `# Center: ${centerLon.toFixed(6)}, ${centerLat.toFixed(6)}\n`;
-            objContent += `# Scale: 1 unit = 1 meter\n\n`;
+            objContent += `# Scale: 1 unit = 1 meter\n`;
+            objContent += `# Coordinate system: X=East-West, Y=Up-Down, Z=North-South\n\n`;
             
             let vertexIndex = 1;
             let buildingsProcessed = 0;
@@ -434,17 +435,17 @@
                                          ? ring.slice(0, -1) : ring;
                         
                         // Bottom vertices (convert to local meter-based coordinates)
-                        // Map: longitude->X (east-west), latitude->Z (north-south), height->Y (up)
+                        // Using standard 3D coordinate system: X=East-West, Y=Up-Down, Z=North-South
                         cleanRing.forEach(coord => {
-                            const x = (coord[0] - centerLon) * lonToMeters;  // Longitude -> X (east-west)
-                            const z = (coord[1] - centerLat) * latToMeters;  // Latitude -> Z (north-south)
+                            const x = (coord[0] - centerLon) * lonToMeters;  // East-West (longitude)
+                            const z = (coord[1] - centerLat) * latToMeters;  // North-South (latitude) 
                             objContent += `v ${x.toFixed(3)} 0 ${z.toFixed(3)}\n`;  // Y=0 for ground level
                         });
                         
                         // Top vertices (same X,Z but with height on Y axis)
                         cleanRing.forEach(coord => {
-                            const x = (coord[0] - centerLon) * lonToMeters;  // Longitude -> X (east-west)
-                            const z = (coord[1] - centerLat) * latToMeters;  // Latitude -> Z (north-south)
+                            const x = (coord[0] - centerLon) * lonToMeters;  // East-West (longitude)
+                            const z = (coord[1] - centerLat) * latToMeters;  // North-South (latitude)
                             objContent += `v ${x.toFixed(3)} ${height.toFixed(3)} ${z.toFixed(3)}\n`;  // Y=height
                         });
                         
