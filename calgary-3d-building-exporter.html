@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Calgary 3D Building Exporter</title>
-    <script src='https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.js'></script>
-    <link href='https://api.mapbox.com/mapbox-gl-js/v3.0.1/mapbox-gl.css' rel='stylesheet' />
-    <script src='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.min.js'></script>
-    <link rel='stylesheet' href='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.css' type='text/css' />
+    <script src='https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.js'></script>
+    <link href='https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.css' rel='stylesheet' />
+    <script src='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.1.0/mapbox-gl-geocoder.min.js'></script>
+    <link rel='stylesheet' href='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.1.0/mapbox-gl-geocoder.css' type='text/css' />
     <style>
         body { 
             margin: 0; 
@@ -104,6 +104,9 @@
         <button class="btn btn-primary" id="loadBuildings">
             Load Buildings in View
         </button>
+        <button class="btn btn-secondary" id="testAPI">
+            Test API Connection
+        </button>
         <button class="btn btn-secondary" id="exportGeoJSON" disabled>
             Export GeoJSON
         </button>
@@ -122,8 +125,8 @@
     </div>
 
     <script>
-        // REPLACE WITH YOUR MAPBOX TOKEN
-        mapboxgl.accessToken = 'YOUR_MAPBOX_TOKEN_HERE';
+        // Mapbox token
+        mapboxgl.accessToken = 'pk.eyJ1IjoiZ3Jpc2ZhYXMiLCJhIjoiY21iemNhd3FmMXdqaDJtb2o4ejRibTNseSJ9.7SGZ6pBZdjVIAqKi0pOi7g';
         
         const CALGARY_API = 'https://data.calgary.ca/resource/cchr-krqg.json';
         let currentBuildings = [];
@@ -131,7 +134,7 @@
         // Initialize map
         const map = new mapboxgl.Map({
             container: 'map',
-            style: 'mapbox://styles/mapbox/streets-v12',
+            style: 'mapbox://styles/grisfaas/cmhcfruw1002x01r640vt7qlf',
             center: [-114.0719, 51.0447], // Calgary center
             zoom: 14,
             pitch: 45,
@@ -166,19 +169,36 @@
         async function fetchBuildingsInView() {
             const bounds = map.getBounds();
             
-            // Build Socrata API query
+            // Build Socrata API query - using 'polygon' instead of 'the_geom'
             const params = new URLSearchParams({
-                '$where': `within_box(the_geom, ${bounds.getNorth()}, ${bounds.getWest()}, ${bounds.getSouth()}, ${bounds.getEast()})`,
+                '$where': `within_box(polygon, ${bounds.getNorth()}, ${bounds.getWest()}, ${bounds.getSouth()}, ${bounds.getEast()})`,
                 '$limit': '2000'
             });
             
             showStatus('Loading buildings from Calgary Open Data...', 'loading');
             
             try {
-                const response = await fetch(`${CALGARY_API}?${params}`);
-                if (!response.ok) throw new Error('API request failed');
+                console.log('Fetching from URL:', `${CALGARY_API}?${params}`);
+                
+                const response = await fetch(`${CALGARY_API}?${params}`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                console.log('Response status:', response.status);
+                console.log('Response headers:', [...response.headers.entries()]);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Response error text:', errorText);
+                    throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorText}`);
+                }
                 
                 const data = await response.json();
+                console.log('Received data:', data.length, 'buildings');
                 currentBuildings = data;
                 
                 // Convert to GeoJSON
@@ -186,10 +206,16 @@
                     type: 'FeatureCollection',
                     features: data.map(building => ({
                         type: 'Feature',
-                        geometry: building.the_geom,
+                        geometry: building.polygon,
                         properties: {
-                            objectid: building.objectid,
-                            height: building.height || 10
+                            struct_id: building.struct_id,
+                            stage: building.stage,
+                            // Calculate height from rooftop elevation minus ground elevation
+                            height: building.rooftop_elev_z && building.grd_elev_min_z 
+                                ? Math.max(building.rooftop_elev_z - building.grd_elev_min_z, 3) 
+                                : 10, // Default height if no elevation data
+                            rooftop_elev: building.rooftop_elev_z,
+                            ground_elev: building.grd_elev_min_z
                         }
                     }))
                 };
@@ -208,10 +234,22 @@
                         type: 'fill-extrusion',
                         source: 'buildings',
                         paint: {
-                            'fill-extrusion-color': '#088',
+                            'fill-extrusion-color': '#2563eb',
                             'fill-extrusion-height': ['get', 'height'],
                             'fill-extrusion-base': 0,
-                            'fill-extrusion-opacity': 0.8
+                            'fill-extrusion-opacity': 1.0
+                        }
+                    });
+                    
+                    // Add outline layer for buildings
+                    map.addLayer({
+                        id: 'buildings-outline',
+                        type: 'line',
+                        source: 'buildings',
+                        paint: {
+                            'line-color': '#1e40af',
+                            'line-width': 1.5,
+                            'line-opacity': 1.0
                         }
                     });
                 }
@@ -222,8 +260,52 @@
                 
                 setTimeout(hideStatus, 3000);
             } catch (error) {
-                showStatus('Error loading buildings: ' + error.message, 'error');
-                console.error('Error:', error);
+                console.error('Detailed error:', error);
+                
+                // Try to provide more specific error messages
+                let errorMessage = 'Error loading buildings: ';
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    errorMessage += 'Network error - this might be a CORS issue. Try opening the browser console for more details.';
+                } else if (error.message.includes('404')) {
+                    errorMessage += 'API endpoint not found. The Calgary Open Data API might have changed.';
+                } else if (error.message.includes('429')) {
+                    errorMessage += 'Too many requests. Please wait a moment and try again.';
+                } else if (error.message.includes('500')) {
+                    errorMessage += 'Server error on Calgary\'s end. Try again later.';
+                } else {
+                    errorMessage += error.message;
+                }
+                
+                showStatus(errorMessage, 'error');
+                
+                // Suggest alternative
+                console.log('You can try accessing the API directly at:', CALGARY_API);
+                console.log('Or try a simpler query without bounds filtering');
+            }
+        }
+
+        // Test API connectivity
+        async function testAPIConnection() {
+            try {
+                console.log('Testing API connection...');
+                const response = await fetch(`${CALGARY_API}?$limit=1`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                console.log('API test response status:', response.status);
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('API test successful, sample data:', data);
+                    return true;
+                } else {
+                    console.error('API test failed:', response.status, response.statusText);
+                    return false;
+                }
+            } catch (error) {
+                console.error('API test error:', error);
+                return false;
             }
         }
 
@@ -233,10 +315,15 @@
                 type: 'FeatureCollection',
                 features: currentBuildings.map(building => ({
                     type: 'Feature',
-                    geometry: building.the_geom,
+                    geometry: building.polygon,
                     properties: {
-                        objectid: building.objectid,
-                        height: building.height || 10
+                        struct_id: building.struct_id,
+                        stage: building.stage,
+                        height: building.rooftop_elev_z && building.grd_elev_min_z 
+                            ? Math.max(building.rooftop_elev_z - building.grd_elev_min_z, 3) 
+                            : 10,
+                        rooftop_elev: building.rooftop_elev_z,
+                        ground_elev: building.grd_elev_min_z
                     }
                 }))
             };
@@ -254,46 +341,149 @@
 
         // Export as OBJ (simplified 3D format)
         function exportOBJ() {
+            if (!currentBuildings || currentBuildings.length === 0) {
+                showStatus('⚠ No buildings loaded. Load buildings first before exporting.', 'error');
+                setTimeout(hideStatus, 3000);
+                return;
+            }
+
             let objContent = '# Calgary 3D Buildings\n';
-            objContent += '# Exported from Calgary Open Data\n\n';
+            objContent += '# Exported from Calgary Open Data\n';
+            objContent += `# Total buildings: ${currentBuildings.length}\n`;
+            objContent += '# Coordinates converted to local space for 3D modeling\n\n';
             
-            let vertexIndex = 1;
+            // Calculate bounds to center the model and convert to local coordinates
+            let minLon = Infinity, maxLon = -Infinity;
+            let minLat = Infinity, maxLat = -Infinity;
             
-            currentBuildings.forEach((building, buildingIdx) => {
-                const geom = building.the_geom;
-                const height = building.height || 10;
+            // Find bounds of all buildings
+            currentBuildings.forEach(building => {
+                const geom = building.polygon;
+                if (!geom) return;
                 
-                if (geom && geom.type === 'MultiPolygon') {
-                    geom.coordinates.forEach(polygon => {
-                        polygon.forEach(ring => {
-                            objContent += `\n# Building ${buildingIdx + 1}\n`;
-                            
-                            // Bottom vertices
-                            ring.forEach(coord => {
-                                objContent += `v ${coord[0]} ${coord[1]} 0\n`;
-                            });
-                            
-                            // Top vertices
-                            ring.forEach(coord => {
-                                objContent += `v ${coord[0]} ${coord[1]} ${height}\n`;
-                            });
-                            
-                            // Create faces (simplified - walls only)
-                            const numVerts = ring.length;
-                            for (let i = 0; i < numVerts - 1; i++) {
-                                const v1 = vertexIndex + i;
-                                const v2 = vertexIndex + i + 1;
-                                const v3 = vertexIndex + numVerts + i + 1;
-                                const v4 = vertexIndex + numVerts + i;
-                                
-                                objContent += `f ${v1} ${v2} ${v3} ${v4}\n`;
-                            }
-                            
-                            vertexIndex += numVerts * 2;
+                let coordinates = [];
+                if (geom.type === 'MultiPolygon') {
+                    coordinates = geom.coordinates;
+                } else if (geom.type === 'Polygon') {
+                    coordinates = [geom.coordinates];
+                }
+                
+                coordinates.forEach(polygon => {
+                    polygon.forEach(ring => {
+                        ring.forEach(coord => {
+                            minLon = Math.min(minLon, coord[0]);
+                            maxLon = Math.max(maxLon, coord[0]);
+                            minLat = Math.min(minLat, coord[1]);
+                            maxLat = Math.max(maxLat, coord[1]);
                         });
                     });
-                }
+                });
             });
+            
+            // Center point for coordinate system origin
+            const centerLon = (minLon + maxLon) / 2;
+            const centerLat = (minLat + maxLat) / 2;
+            
+            // Scale factor to convert degrees to meters (approximate for Calgary latitude)
+            // At Calgary's latitude (~51°N), 1 degree longitude ≈ 69,400 meters
+            // 1 degree latitude ≈ 111,320 meters
+            const lonToMeters = 69400; // meters per degree longitude at Calgary latitude
+            const latToMeters = 111320; // meters per degree latitude
+            
+            objContent += `# Center: ${centerLon.toFixed(6)}, ${centerLat.toFixed(6)}\n`;
+            objContent += `# Scale: 1 unit = 1 meter\n\n`;
+            
+            let vertexIndex = 1;
+            let buildingsProcessed = 0;
+            
+            currentBuildings.forEach((building, buildingIdx) => {
+                const geom = building.polygon;
+                const height = building.rooftop_elev_z && building.grd_elev_min_z 
+                    ? Math.max(building.rooftop_elev_z - building.grd_elev_min_z, 3) 
+                    : 10;
+                
+                if (!geom) {
+                    console.warn(`Building ${buildingIdx} has no geometry`);
+                    return;
+                }
+                
+                // Handle different geometry types
+                let coordinates = [];
+                if (geom.type === 'MultiPolygon') {
+                    coordinates = geom.coordinates;
+                } else if (geom.type === 'Polygon') {
+                    coordinates = [geom.coordinates];
+                } else {
+                    console.warn(`Building ${buildingIdx} has unsupported geometry type: ${geom.type}`);
+                    return;
+                }
+                
+                coordinates.forEach(polygon => {
+                    polygon.forEach((ring, ringIdx) => {
+                        if (ring.length < 3) {
+                            console.warn(`Building ${buildingIdx} ring ${ringIdx} has insufficient points`);
+                            return;
+                        }
+                        
+                        objContent += `\n# Building ${buildingIdx + 1} (ID: ${building.struct_id || 'unknown'})\n`;
+                        objContent += `# Height: ${height}m\n`;
+                        
+                        // Remove duplicate last point if it matches the first (common in polygons)
+                        const cleanRing = ring[0][0] === ring[ring.length - 1][0] && 
+                                         ring[0][1] === ring[ring.length - 1][1] 
+                                         ? ring.slice(0, -1) : ring;
+                        
+                        // Bottom vertices (convert to local meter-based coordinates)
+                        // Map: longitude->X (east-west), latitude->Z (north-south), height->Y (up)
+                        cleanRing.forEach(coord => {
+                            const x = (coord[0] - centerLon) * lonToMeters;  // Longitude -> X (east-west)
+                            const z = (coord[1] - centerLat) * latToMeters;  // Latitude -> Z (north-south)
+                            objContent += `v ${x.toFixed(3)} 0 ${z.toFixed(3)}\n`;  // Y=0 for ground level
+                        });
+                        
+                        // Top vertices (same X,Z but with height on Y axis)
+                        cleanRing.forEach(coord => {
+                            const x = (coord[0] - centerLon) * lonToMeters;  // Longitude -> X (east-west)
+                            const z = (coord[1] - centerLat) * latToMeters;  // Latitude -> Z (north-south)
+                            objContent += `v ${x.toFixed(3)} ${height.toFixed(3)} ${z.toFixed(3)}\n`;  // Y=height
+                        });
+                        
+                        const numVerts = cleanRing.length;
+                        
+                        // Bottom face (reverse order for correct normal)
+                        objContent += 'f ';
+                        for (let i = numVerts - 1; i >= 0; i--) {
+                            objContent += `${vertexIndex + i} `;
+                        }
+                        objContent += '\n';
+                        
+                        // Top face
+                        objContent += 'f ';
+                        for (let i = 0; i < numVerts; i++) {
+                            objContent += `${vertexIndex + numVerts + i} `;
+                        }
+                        objContent += '\n';
+                        
+                        // Side walls
+                        for (let i = 0; i < numVerts; i++) {
+                            const next = (i + 1) % numVerts;
+                            const v1 = vertexIndex + i;           // bottom current
+                            const v2 = vertexIndex + next;        // bottom next
+                            const v3 = vertexIndex + numVerts + next; // top next
+                            const v4 = vertexIndex + numVerts + i;    // top current
+                            
+                            objContent += `f ${v1} ${v2} ${v3} ${v4}\n`;
+                        }
+                        
+                        vertexIndex += numVerts * 2;
+                        buildingsProcessed++;
+                    });
+                });
+            });
+            
+            objContent += `\n# Export complete: ${buildingsProcessed} building parts processed\n`;
+            
+            console.log(`OBJ Export: ${buildingsProcessed} building parts, ${vertexIndex - 1} vertices`);
             
             const blob = new Blob([objContent], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
@@ -308,12 +498,29 @@
 
         // Event listeners
         document.getElementById('loadBuildings').addEventListener('click', fetchBuildingsInView);
+        document.getElementById('testAPI').addEventListener('click', async () => {
+            showStatus('Testing API connection...', 'loading');
+            const isWorking = await testAPIConnection();
+            if (isWorking) {
+                showStatus('✓ API connection successful!', 'success');
+            } else {
+                showStatus('✗ API connection failed - check console for details', 'error');
+            }
+            setTimeout(hideStatus, 5000);
+        });
         document.getElementById('exportGeoJSON').addEventListener('click', exportGeoJSON);
         document.getElementById('exportOBJ').addEventListener('click', exportOBJ);
 
         // Load initial buildings when map is ready
-        map.on('load', () => {
-            showStatus('Map ready! Search or pan, then load buildings.', 'success');
+        map.on('load', async () => {
+            showStatus('Map ready! Testing API connection...', 'loading');
+            const isAPIWorking = await testAPIConnection();
+            
+            if (isAPIWorking) {
+                showStatus('✓ Map ready! API working. Search or pan, then load buildings.', 'success');
+            } else {
+                showStatus('⚠ Map ready, but API connection failed. Check console.', 'error');
+            }
             setTimeout(hideStatus, 4000);
         });
     </script>
